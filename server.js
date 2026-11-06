@@ -69,6 +69,7 @@ function normalizeSearchText(value) {
 function normalizeCompanyName(value) {
     return normalizeSearchText(value)
         .replace(/\b(?:limited|ltd|plc)\b/g, '')
+        .replace(/\beskayef (?:bangladesh|pharmaceuticals)\b/g, 'eskayef')
         .trim()
         .replace(/\s+/g, ' ');
 }
