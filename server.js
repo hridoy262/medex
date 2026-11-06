@@ -68,10 +68,21 @@ function normalizeSearchText(value) {
 
 function normalizeCompanyName(value) {
     return normalizeSearchText(value)
-        .replace(/\b(?:limited|ltd|plc)\b/g, '')
-        .replace(/\beskayef (?:bangladesh|pharmaceuticals)\b/g, 'eskayef')
-        .trim()
-        .replace(/\s+/g, ' ');
+        .split(' ')
+        .filter(token => ![
+            'the', 'limited', 'ltd', 'plc', 'pharma', 'pharmaceutical',
+            'pharmaceuticals', 'laboratory', 'laboratories', 'lab',
+            'bangladesh', 'company', 'co', 'industry', 'industries',
+            'division', 'manufacturing', 'mfg', 'inc', 'corporation',
+            'corporations'
+        ].includes(token))
+        .join(' ');
+}
+
+function companiesMatch(left, right) {
+    const leftTokens = normalizeCompanyName(left).split(' ').filter(Boolean);
+    const rightTokens = new Set(normalizeCompanyName(right).split(' ').filter(Boolean));
+    return leftTokens.some(token => rightTokens.has(token));
 }
 
 function scoreCsvMedicine(medicine, query, tokens) {
@@ -208,10 +219,14 @@ async function refreshCsvMedicinePrices(searchName, medicines) {
         const $ = cheerio.load(searchResponse.data);
         const resultLinks = $('a[href*="/brands/"]').toArray().map(link => {
             const result = $(link);
+            const resultRow = result.closest('.search-result-row');
+            const resultDescription = resultRow.find('p').first().text();
+            const manufacturer = resultDescription.match(/manufactured by\s+(.+)/i)?.[1]?.trim() || '';
             return {
                 url: new URL(result.attr('href'), searchUrl).href,
                 label: normalizeSearchText(result.text()),
-                description: normalizeSearchText(result.closest('.search-result-row').text()),
+                generic: normalizeSearchText(resultRow.find('p i').first().text()),
+                manufacturer,
                 dosageForm: result.closest('.search-result-title').find('img').attr('title')
                     || result.closest('.search-result-title').find('img').attr('alt')
                     || ''
@@ -221,17 +236,32 @@ async function refreshCsvMedicinePrices(searchName, medicines) {
 
         medicines.forEach(medicine => {
             const expectedLabel = normalizeSearchText(`${medicine.name} ${medicine.strength}`);
-            const expectedCompany = normalizeCompanyName(medicine.company);
-            if (!expectedLabel || !expectedCompany) return;
+            const expectedGeneric = normalizeSearchText(medicine.generic);
+            if (!expectedLabel) return;
 
-            const matches = resultLinks.filter(result =>
-                (result.label === expectedLabel || result.label.startsWith(`${expectedLabel} `))
-                && normalizeCompanyName(result.description).includes(expectedCompany)
+            const productMatches = resultLinks.filter(result =>
+                result.label === expectedLabel || result.label.startsWith(`${expectedLabel} `)
             );
-            const commonForms = matches.filter(result => /^(tablet|capsule)$/i.test(result.dosageForm));
-            const match = commonForms.length === 1
-                ? commonForms[0]
-                : matches.length === 1 ? matches[0] : null;
+            const commonForms = productMatches.filter(result => /^(tablet|capsule)$/i.test(result.dosageForm));
+            const candidates = commonForms.length ? commonForms : productMatches;
+            const companyMatches = candidates.filter(result =>
+                result.manufacturer && companiesMatch(medicine.company, result.manufacturer)
+            );
+            const genericMatches = expectedGeneric
+                ? candidates.filter(result => result.generic === expectedGeneric)
+                : [];
+            let match = null;
+
+            if (companyMatches.length === 1) {
+                match = companyMatches[0];
+            } else if (companyMatches.length > 1 && genericMatches.length === 1) {
+                match = genericMatches[0];
+            } else if (companyMatches.length === 0 && genericMatches.length === 1) {
+                match = genericMatches[0];
+            } else if (companyMatches.length === 0 && candidates.length === 1) {
+                match = candidates[0];
+            }
+
             if (match) {
                 const matches = matchingLinks.get(match.url) || [];
                 matches.push({ medicine, dosageForm: match.dosageForm });
